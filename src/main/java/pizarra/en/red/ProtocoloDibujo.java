@@ -26,9 +26,7 @@ public class ProtocoloDibujo implements Runnable {
     public void addPropertyChangeListener(PropertyChangeListener l) {
         pcs.addPropertyChangeListener(l);
     }
-    public void removePropertyChangeListener(PropertyChangeListener l) {
-        pcs.removePropertyChangeListener(l);
-    }
+
 
     // ── Red ───────────────────────────────────────────────────────────────────
     private final Socket           socket;

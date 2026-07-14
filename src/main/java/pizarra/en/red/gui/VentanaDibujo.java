@@ -9,19 +9,12 @@ import pizarra.en.red.objetos.*;
 
 import javax.swing.*;
 import java.awt.*;
-import java.awt.event.ActionListener;
 import java.beans.PropertyChangeEvent;
 import java.beans.PropertyChangeListener;
 import java.time.LocalDateTime;
 import java.time.format.DateTimeFormatter;
 
-/**
- * Ventana: se encarga SOLO de la parte gráfica (menú, toolbar, lienzo,
- * chat, diálogos) y de mantener las listas de figuras a dibujar.
- * Todo lo que es "conectarse, reconectar, desconectar, mandar por red"
- * está delegado en ConexionControlador -- esta clase no abre sockets ni
- * maneja hilos de red directamente.
- */
+
 public class VentanaDibujo extends JFrame implements PropertyChangeListener {
 
     private static final Logger logger = LogManager.getRootLogger();
@@ -30,11 +23,10 @@ public class VentanaDibujo extends JFrame implements PropertyChangeListener {
     private final ListaFiguras listaLocal   = new ListaFiguras();
     private final ListaFiguras listaRemota  = new ListaFiguras();
 
-    // ── Controlador de conexión (red) ──────────────────────────────────────────
-    private final ConexionControlador controlador = new ConexionControlador(listaLocal, this);
-
-    // ── Opcion A: historial / reproducción ────────────────────────────────────
-    private final HistorialSesion historial = crearHistorial();
+    // ── Colaboradores ───────────────────────────────────────────────────────────
+    private final ConexionControlador controlador  = new ConexionControlador(listaLocal, this);
+    private final DialogoEspera       dialogoEspera = new DialogoEspera(this);
+    private final HistorialSesion     historial     = crearHistorial();
 
     private static HistorialSesion crearHistorial() {
         String marca = LocalDateTime.now().format(DateTimeFormatter.ofPattern("yyyyMMdd_HHmmss"));
@@ -44,11 +36,9 @@ public class VentanaDibujo extends JFrame implements PropertyChangeListener {
     }
 
     // ── GUI ───────────────────────────────────────────────────────────────────
-    private PanelDibujo   panel;
-    private JDialog       dialogoEspera;
-    private JTextArea     txtChat;
-    private JTextField    txtMensaje;
-    private JLabel        lblEstadoConexion;
+    private PanelDibujo panel;
+    private PanelChat   panelChat;
+    private JLabel       lblEstadoConexion;
 
     // ── Constructor ───────────────────────────────────────────────────────────
     public VentanaDibujo() {
@@ -60,10 +50,12 @@ public class VentanaDibujo extends JFrame implements PropertyChangeListener {
         setLayout(new BorderLayout());
 
         panel = new PanelDibujo(listaLocal, listaRemota, this);
+        panelChat = new PanelChat(this::onMensajeLocal);
+
         setJMenuBar(construirMenu());
         add(construirToolbar(), BorderLayout.NORTH);
         add(panel, BorderLayout.CENTER);
-        add(construirPanelChat(), BorderLayout.EAST);
+        add(panelChat, BorderLayout.EAST);
 
         lblEstadoConexion = new JLabel("Estado: sin conexión");
         add(lblEstadoConexion, BorderLayout.SOUTH);
@@ -107,20 +99,17 @@ public class VentanaDibujo extends JFrame implements PropertyChangeListener {
                 });
             }
 
-            case ProtocoloDibujo.PROP_CONECTADO -> {
-                SwingUtilities.invokeLater(this::cerrarDialogoEspera);
-            }
+            case ProtocoloDibujo.PROP_CONECTADO -> dialogoEspera.cerrar();
 
             case ProtocoloDibujo.PROP_MENSAJE_REMOTO -> {
                 String texto = (String) evt.getNewValue();
                 historial.registrar(HistorialSesion.TIPO_MENSAJE, HistorialSesion.ORIGEN_REMOTO, texto);
-                SwingUtilities.invokeLater(() -> txtChat.append("Otro: " + texto + "\n"));
+                SwingUtilities.invokeLater(() -> panelChat.agregarRemoto(texto));
             }
 
             case ProtocoloDibujo.PROP_ERROR -> {
                 // Si la desconexión fue pedida por el usuario, este error es
-                // esperado (el controlador cerró el socket a propósito) y no
-                // hay que mostrar nada raro ni preocuparse.
+                // esperado (el controlador cerró el socket a propósito).
                 if (controlador.esDesconexionIntencional()) return;
                 String msg = (String) evt.getNewValue();
                 actualizarEstadoConexion("Conexión perdida (" + msg + ")");
@@ -136,11 +125,11 @@ public class VentanaDibujo extends JFrame implements PropertyChangeListener {
         controlador.enviarFigura(f);
     }
 
-    // ── Envío de chat, llamado desde el panel de chat ─────────────────────────
+    // ── Llamado por PanelChat cuando el usuario envía un mensaje ──────────────
     private void onMensajeLocal(String texto) {
         controlador.enviarMensaje(texto);
         historial.registrar(HistorialSesion.TIPO_MENSAJE, HistorialSesion.ORIGEN_LOCAL, texto);
-        txtChat.append("Yo: " + texto + "\n");
+        panelChat.agregarPropio(texto);
     }
 
     // ── Menú ──────────────────────────────────────────────────────────────────
@@ -149,11 +138,11 @@ public class VentanaDibujo extends JFrame implements PropertyChangeListener {
         JMenu archivo = new JMenu("Archivo");
 
         JMenuItem servidor    = new JMenuItem("Comenzar Servidor");
-        JMenuItem conectar     = new JMenuItem("Conectar");
-        JMenuItem desconectar  = new JMenuItem("Desconectar");
-        JMenuItem reproducir   = new JMenuItem("Reproducir Historial");
-        JMenuItem limpiar      = new JMenuItem("Limpiar");
-        JMenuItem salir        = new JMenuItem("Salir");
+        JMenuItem conectar    = new JMenuItem("Conectar");
+        JMenuItem desconectar = new JMenuItem("Desconectar");
+        JMenuItem reproducir  = new JMenuItem("Reproducir Historial");
+        JMenuItem limpiar     = new JMenuItem("Limpiar");
+        JMenuItem salir       = new JMenuItem("Salir");
 
         servidor.addActionListener(e -> controlador.iniciarServidor(listaRemota));
         conectar.addActionListener(e -> conectarDialogo());
@@ -193,41 +182,7 @@ public class VentanaDibujo extends JFrame implements PropertyChangeListener {
         return tb;
     }
 
-    // ── Panel de chat ────────────────────────────────────────────────────────
-    private JPanel construirPanelChat() {
-        JPanel panelChat = new JPanel(new BorderLayout(5, 5));
-
-        txtChat = new JTextArea(8, 20);
-        txtChat.setEditable(false);
-        txtChat.setLineWrap(true);
-        txtChat.setWrapStyleWord(true);
-        JScrollPane scroll = new JScrollPane(txtChat);
-        scroll.setBorder(BorderFactory.createTitledBorder("Chat"));
-
-        JPanel envio = new JPanel(new BorderLayout(5, 5));
-        txtMensaje = new JTextField();
-        JButton btnEnviar = new JButton("Enviar");
-
-        ActionListener enviarAccion = e -> {
-            String texto = txtMensaje.getText().trim();
-            if (!texto.isEmpty()) {
-                onMensajeLocal(texto);
-                txtMensaje.setText("");
-            }
-        };
-        btnEnviar.addActionListener(enviarAccion);
-        txtMensaje.addActionListener(enviarAccion);
-
-        envio.add(txtMensaje, BorderLayout.CENTER);
-        envio.add(btnEnviar, BorderLayout.EAST);
-
-        panelChat.add(scroll, BorderLayout.CENTER);
-        panelChat.add(envio, BorderLayout.SOUTH);
-        panelChat.setPreferredSize(new Dimension(240, 0));
-        return panelChat;
-    }
-
-    // ── Diálogo para pedir host/puerto -- esto es GUI pura, se queda acá ──────
+    // ── Diálogo para pedir host/puerto -- GUI pura, se queda acá ──────────────
     private void conectarDialogo() {
         JTextField hostField   = new JTextField("localhost");
         JTextField puertoField = new JTextField("5000");
@@ -261,9 +216,9 @@ public class VentanaDibujo extends JFrame implements PropertyChangeListener {
 
         synchronized (listaLocal)  { listaLocal.limpiar(); }
         synchronized (listaRemota) { listaRemota.limpiar(); }
-        txtChat.setText("");
+        panelChat.limpiar();
         panel.repaint();
-        txtChat.append("--- Reproduciendo historial ---\n");
+        panelChat.agregarAviso("--- Reproduciendo historial ---");
 
         historial.reproducir(ev -> SwingUtilities.invokeLater(() -> {
             boolean esLocal = HistorialSesion.ORIGEN_LOCAL.equals(ev.origen);
@@ -279,8 +234,7 @@ public class VentanaDibujo extends JFrame implements PropertyChangeListener {
                     panel.repaint();
                 }
             } else if (HistorialSesion.TIPO_MENSAJE.equals(ev.tipo)) {
-                String quien = esLocal ? "Yo" : "Otro";
-                txtChat.append("[Historial] " + quien + ": " + ev.datos + "\n");
+                panelChat.agregarHistorial(esLocal ? "Yo" : "Otro", ev.datos);
             }
         }), 400);
     }
@@ -289,35 +243,17 @@ public class VentanaDibujo extends JFrame implements PropertyChangeListener {
     private void limpiar() {
         synchronized (listaLocal)  { listaLocal.limpiar(); }
         synchronized (listaRemota) { listaRemota.limpiar(); }
-        txtChat.setText("");
+        panelChat.limpiar();
         panel.repaint();
     }
 
-    // ── Diálogo de espera y estado -- llamados también desde ConexionControlador ──
-    // Son públicos porque el controlador vive en otro paquete (pizarra.en.red)
-    // y necesita poder pedirle a la ventana que actualice la pantalla. Cada uno
-    // se encarga de saltar al hilo de Swing (invokeLater) así el controlador no
-    // tiene que preocuparse desde qué hilo lo está llamando.
-
+    // ── Métodos públicos que llama ConexionControlador (otro paquete) ────────
     public void mostrarDialogoEspera(String mensaje) {
-        SwingUtilities.invokeLater(() -> {
-            dialogoEspera = new JDialog(this, "Conexión", false);
-            JLabel label  = new JLabel(mensaje);
-            label.setHorizontalAlignment(SwingConstants.CENTER);
-            dialogoEspera.add(label);
-            dialogoEspera.setSize(250, 100);
-            dialogoEspera.setLocationRelativeTo(this);
-            dialogoEspera.setVisible(true);
-        });
+        dialogoEspera.mostrar(mensaje);
     }
 
     public void cerrarDialogoEspera() {
-        SwingUtilities.invokeLater(() -> {
-            if (dialogoEspera != null) {
-                dialogoEspera.dispose();
-                dialogoEspera = null;
-            }
-        });
+        dialogoEspera.cerrar();
     }
 
     public void actualizarEstadoConexion(String texto) {
@@ -326,7 +262,7 @@ public class VentanaDibujo extends JFrame implements PropertyChangeListener {
 
     // Llamado por ServidorDibujo cuando un cliente se conecta
     public void clienteConectado() {
-        cerrarDialogoEspera();
+        dialogoEspera.cerrar();
     }
 
     public static void main(String[] args) {

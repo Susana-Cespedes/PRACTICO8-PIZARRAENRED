@@ -6,6 +6,7 @@ import pizarra.en.red.gui.VentanaDibujo;
 import pizarra.en.red.listas.Lista;
 import pizarra.en.red.objetos.ListaFiguras;
 
+import java.io.IOException;
 import java.io.PrintWriter;
 import java.net.ServerSocket;
 import java.net.Socket;
@@ -20,10 +21,13 @@ public class ServidorDibujo {
 
     // listaLocal:  lo que dibujó el propio operador del servidor.
     // listaRemota: lo que llegó por red desde otros clientes.
-    // Se necesitan ambas para poder responder "LISTA" con el tablero
-    // completo a cualquier cliente que se conecte.
     private final ListaFiguras listaLocal;
     private final ListaFiguras listaRemota;
+
+    // Buena práctica: no se usa Thread.stop()/kill(); un boolean (volatile,
+    // porque lo lee el hilo del servidor y lo escribe el hilo de Swing) le
+    // avisa al bucle de accept() que debe terminar.
+    private volatile boolean pararServidor = false;
 
     private final CopyOnWriteArrayList<ClienteConexion> clientes = new CopyOnWriteArrayList<>();
 
@@ -50,11 +54,12 @@ public class ServidorDibujo {
 
     // ── Bucle principal ───────────────────────────────────────────────────────
     public void iniciar() throws Exception {
-        while (true) {
-            Socket socket = server.accept();
-            logger.info("CLIENTE CONECTADO: " + socket.getRemoteSocketAddress());
-
+        while (!pararServidor) {
+            Socket socket = null;
             try {
+                socket = server.accept();
+                logger.info("CLIENTE CONECTADO: " + socket.getRemoteSocketAddress());
+
                 ClienteConexion conexion = new ClienteConexion(socket);
                 clientes.add(conexion);
 
@@ -69,8 +74,33 @@ public class ServidorDibujo {
                 new Thread(protocolo, "cliente-" + socket.getPort()).start();
 
             } catch (Exception e) {
-                logger.warn("ERROR AL ACEPTAR CLIENTE: " + e.getMessage());
-                cerrarSocket(socket);
+                // pararServidor() cierra "server" a propósito, y eso hace
+                // que accept() lance esta misma excepción -- no es un error
+                // real, es la forma en que el hilo se entera de que debe
+                // terminar.
+                if (pararServidor) {
+                    logger.info("Servidor detenido, saliendo del bucle de accept()");
+                } else {
+                    logger.warn("ERROR AL ACEPTAR CLIENTE: " + e.getMessage());
+                    cerrarSocket(socket);
+                }
+            }
+        }
+        logger.info("Hilo del servidor terminado");
+    }
+
+    /**
+     * Para el servidor sin usar Thread.stop()/kill(): marca el boolean y
+     * cierra el ServerSocket para desbloquear el accept() que está esperando
+     * clientes -- mismo mecanismo que se usa en ServidorWeb (Práctico 6).
+     */
+    public void pararServidor() {
+        pararServidor = true;
+        if (server != null && !server.isClosed()) {
+            try {
+                server.close();
+            } catch (IOException e) {
+                logger.warn("Error al cerrar el ServerSocket al parar: " + e.getMessage());
             }
         }
     }
@@ -105,6 +135,7 @@ public class ServidorDibujo {
     }
 
     private void cerrarSocket(Socket socket) {
+        if (socket == null) return;
         try { socket.close(); } catch (Exception ignored) {}
     }
 }

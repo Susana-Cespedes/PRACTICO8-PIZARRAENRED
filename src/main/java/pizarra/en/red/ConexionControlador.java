@@ -10,17 +10,11 @@ import java.net.Socket;
 
 /**
  * Controlador de conexión: sabe cómo levantar el servidor, conectarse
- * como cliente (con reconexión automática si se cae la red), desconectar,
- * y hacia dónde mandar cada figura o mensaje (al servidor si soy cliente,
- * a todos los clientes conectados si soy servidor).
- *
- * VentanaDibujo ya no sabe nada de sockets ni de hilos de red: solo le
- * pide cosas a este controlador (conectar, desconectar, enviarFigura...)
- * y este le avisa de vuelta llamando a un puñado de métodos públicos de
- * la ventana (mostrarDialogoEspera, cerrarDialogoEspera,
- * actualizarEstadoConexion) para que actualice la pantalla. La ventana
- * sigue siendo la única que toca Swing.
+ * como cliente (con reconexión automática si se cae la red), desconectar
+ * (ya sea el cliente o el servidor, según el rol activo), y hacia dónde
+ * mandar cada figura o mensaje.
  */
+
 public class ConexionControlador {
 
     private static final Logger logger = LogManager.getRootLogger();
@@ -141,8 +135,16 @@ public class ConexionControlador {
         ventana.actualizarEstadoConexion("Desconectado");
     }
 
+    /**
+     * Desconecta lo que esté activo: si soy cliente, cierro mi conexión al
+     * servidor; si soy servidor, paro el servidor (con el mismo mecanismo
+     * boolean + cerrar socket que ServidorDibujo.pararServidor()). Antes
+     * esto solo desconectaba al cliente y dejaba el servidor corriendo de
+     * fondo sin que se notara.
+     */
     public void desconectar() {
         desconexionIntencional = true;
+
         if (protocolo != null) {
             try {
                 protocolo.enviarChau();
@@ -150,7 +152,14 @@ public class ConexionControlador {
                 // puede fallar si la conexión ya estaba caída, no importa
             }
             protocolo.cerrar();
+            protocolo = null;
         }
+
+        if (servidor != null) {
+            servidor.pararServidor();
+            servidor = null;
+        }
+
         ventana.actualizarEstadoConexion("Desconectado");
     }
 }
